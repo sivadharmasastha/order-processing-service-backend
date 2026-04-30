@@ -108,7 +108,7 @@ try
 
     // Configure Services
     builder.Services.AddScoped<IOrderRepository, OrderRepository>();
-    builder.Services.AddScoped<OrderService>();
+    builder.Services.AddScoped<IOrderService, OrderService>();
     builder.Services.AddScoped<IdempotencyService>();
     builder.Services.AddScoped<RetryService>();
 
