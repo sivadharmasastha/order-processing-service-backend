@@ -15,6 +15,7 @@ namespace OrderProcessingSystem.Services
         Task<OrderResponse?> GetOrderByIdAsync(int id, CancellationToken cancellationToken = default);
         Task<OrderResponse?> GetOrderByOrderNumberAsync(string orderNumber, CancellationToken cancellationToken = default);
         Task<IEnumerable<OrderResponse>> GetAllOrdersAsync(CancellationToken cancellationToken = default);
+        Task<PaginatedResponse<OrderResponse>> GetOrdersAsync(OrderQueryParameters parameters, CancellationToken cancellationToken = default);
         Task<bool> UpdateOrderStatusAsync(int orderId, OrderStatus status, CancellationToken cancellationToken = default);
         Task<bool> DeleteOrderAsync(int id, CancellationToken cancellationToken = default);
     }
@@ -209,15 +210,99 @@ namespace OrderProcessingSystem.Services
         }
 
         /// <summary>
-        /// Retrieves all orders
+        /// Retrieves all orders (simple version without pagination - use GetOrdersAsync for production workloads)
         /// </summary>
+        /// <param name="cancellationToken">Cancellation token for async operation</param>
+        /// <returns>Collection of all orders</returns>
+        /// <remarks>
+        /// WARNING: This method retrieves ALL orders without pagination. 
+        /// For production use with large datasets, use GetOrdersAsync with pagination instead.
+        /// </remarks>
         public async Task<IEnumerable<OrderResponse>> GetAllOrdersAsync(CancellationToken cancellationToken = default)
         {
-            _logger.LogInformation("Retrieving all orders");
+            _logger.LogInformation("Retrieving all orders (unpaginated)");
 
-            var orders = await _orderRepository.GetAllOrdersAsync(cancellationToken);
-            
-            return orders.Select(OrderResponse.FromOrder).ToList();
+            try
+            {
+                var orders = await _orderRepository.GetAllOrdersAsync(cancellationToken);
+                
+                var orderResponses = orders.Select(OrderResponse.FromOrder).ToList();
+                
+                _logger.LogInformation("Successfully retrieved {OrderCount} orders", orderResponses.Count);
+                
+                return orderResponses;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error occurred while retrieving all orders");
+                throw new InvalidOperationException("Failed to retrieve orders. Please try again later.", ex);
+            }
+        }
+
+        /// <summary>
+        /// Retrieves orders with advanced filtering, sorting, and pagination (Production-level method)
+        /// </summary>
+        /// <param name="parameters">Query parameters for filtering, sorting, and pagination</param>
+        /// <param name="cancellationToken">Cancellation token for async operation</param>
+        /// <returns>Paginated response containing filtered and sorted orders</returns>
+        /// <exception cref="ArgumentNullException">Thrown when parameters is null</exception>
+        /// <exception cref="ArgumentException">Thrown when parameters validation fails</exception>
+        public async Task<PaginatedResponse<OrderResponse>> GetOrdersAsync(
+            OrderQueryParameters parameters, 
+            CancellationToken cancellationToken = default)
+        {
+            if (parameters == null)
+            {
+                _logger.LogError("GetOrdersAsync called with null parameters");
+                throw new ArgumentNullException(nameof(parameters), "Query parameters cannot be null");
+            }
+
+            try
+            {
+                // Validate parameters
+                parameters.Validate();
+
+                _logger.LogInformation(
+                    "Retrieving orders with parameters - Page: {PageNumber}, PageSize: {PageSize}, Status: {Status}, " +
+                    "CustomerId: {CustomerId}, SearchTerm: {SearchTerm}, SortBy: {SortBy}, SortOrder: {SortOrder}",
+                    parameters.PageNumber, parameters.PageSize, parameters.Status ?? "All", 
+                    parameters.CustomerId ?? "All", parameters.SearchTerm ?? "None", 
+                    parameters.SortBy, parameters.SortOrder);
+
+                // Retrieve filtered and paginated orders from repository
+                var (orders, totalCount) = await _orderRepository.GetOrdersWithFilteringAsync(
+                    parameters, 
+                    cancellationToken);
+
+                // Convert to response DTOs
+                var orderResponses = orders.Select(OrderResponse.FromOrder).ToList();
+
+                // Build paginated response
+                var paginatedResponse = new PaginatedResponse<OrderResponse>
+                {
+                    Data = orderResponses,
+                    TotalCount = totalCount,
+                    PageNumber = parameters.PageNumber,
+                    PageSize = parameters.PageSize
+                };
+
+                _logger.LogInformation(
+                    "Successfully retrieved {OrderCount} orders out of {TotalCount} total (Page {PageNumber}/{TotalPages})",
+                    orderResponses.Count, totalCount, paginatedResponse.PageNumber, paginatedResponse.TotalPages);
+
+                return paginatedResponse;
+            }
+            catch (ArgumentException argEx)
+            {
+                _logger.LogWarning(argEx, "Invalid query parameters provided");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error occurred while retrieving paginated orders");
+                throw new InvalidOperationException(
+                    "Failed to retrieve orders with the specified criteria. Please try again later.", ex);
+            }
         }
 
         /// <summary>

@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using OrderProcessingSystem.Data;
+using OrderProcessingSystem.Models;
 
 #nullable disable
 
@@ -162,7 +163,7 @@ namespace OrderProcessingSystem.Data.Migrations
 
                     b.ToTable("Orders", (string)null);
 
-                    b.HasQueryFilter(o => !o.IsDeleted);
+                    b.HasQueryFilter((Order o) => !o.IsDeleted);
                 });
 
             modelBuilder.Entity("OrderProcessingSystem.Models.OrderAuditLog", b =>

@@ -11,6 +11,9 @@ namespace OrderProcessingSystem.Repositories
     {
         Task<Order> CreateOrderAsync(Order order, CancellationToken cancellationToken = default);
         Task<IEnumerable<Order>> GetAllOrdersAsync(CancellationToken cancellationToken = default);
+        Task<(IEnumerable<Order> Orders, int TotalCount)> GetOrdersWithFilteringAsync(
+            OrderQueryParameters parameters, 
+            CancellationToken cancellationToken = default);
         Task<Order?> GetOrderByIdAsync(int id, CancellationToken cancellationToken = default);
         Task<Order?> GetOrderByOrderNumberAsync(string orderNumber, CancellationToken cancellationToken = default);
         Task<bool> UpdateOrderAsync(Order order, CancellationToken cancellationToken = default);
@@ -278,6 +281,139 @@ namespace OrderProcessingSystem.Repositories
             {
                 _logger.LogError(ex, "Error occurred while deleting order with ID: {OrderId}", id);
                 throw new InvalidOperationException($"Failed to delete order with ID: {id}", ex);
+            }
+        }
+
+        /// <summary>
+        /// Retrieves orders with advanced filtering, sorting, and pagination
+        /// </summary>
+        /// <param name="parameters">Query parameters for filtering and pagination</param>
+        /// <param name="cancellationToken">Cancellation token</param>
+        /// <returns>Tuple containing filtered orders and total count</returns>
+        public async Task<(IEnumerable<Order> Orders, int TotalCount)> GetOrdersWithFilteringAsync(
+            OrderQueryParameters parameters, 
+            CancellationToken cancellationToken = default)
+        {
+            if (parameters == null)
+            {
+                throw new ArgumentNullException(nameof(parameters), "Query parameters cannot be null");
+            }
+
+            try
+            {
+                _logger.LogInformation(
+                    "Retrieving orders with filters - Page: {PageNumber}, PageSize: {PageSize}, Status: {Status}, CustomerId: {CustomerId}",
+                    parameters.PageNumber, parameters.PageSize, parameters.Status ?? "All", parameters.CustomerId ?? "All");
+
+                // Validate parameters
+                parameters.Validate();
+
+                // Start with base query
+                IQueryable<Order> query = _context.Orders.AsNoTracking();
+
+                // Apply soft-delete filter (exclude deleted by default)
+                if (!parameters.IncludeDeleted)
+                {
+                    query = query.Where(o => !o.IsDeleted);
+                }
+
+                // Apply status filter
+                if (!string.IsNullOrWhiteSpace(parameters.Status))
+                {
+                    if (Enum.TryParse<OrderStatus>(parameters.Status, true, out var status))
+                    {
+                        query = query.Where(o => o.Status == status);
+                    }
+                }
+
+                // Apply customer ID filter
+                if (!string.IsNullOrWhiteSpace(parameters.CustomerId))
+                {
+                    query = query.Where(o => o.CustomerId == parameters.CustomerId);
+                }
+
+                // Apply product name filter (partial match, case-insensitive)
+                if (!string.IsNullOrWhiteSpace(parameters.ProductName))
+                {
+                    query = query.Where(o => EF.Functions.Like(o.ProductName, $"%{parameters.ProductName}%"));
+                }
+
+                // Apply date range filter
+                if (parameters.FromDate.HasValue)
+                {
+                    query = query.Where(o => o.CreatedAt >= parameters.FromDate.Value);
+                }
+
+                if (parameters.ToDate.HasValue)
+                {
+                    // Add one day to include the entire ToDate day
+                    var toDateInclusive = parameters.ToDate.Value.Date.AddDays(1);
+                    query = query.Where(o => o.CreatedAt < toDateInclusive);
+                }
+
+                // Apply amount range filter
+                if (parameters.MinAmount.HasValue)
+                {
+                    query = query.Where(o => o.TotalAmount >= parameters.MinAmount.Value);
+                }
+
+                if (parameters.MaxAmount.HasValue)
+                {
+                    query = query.Where(o => o.TotalAmount <= parameters.MaxAmount.Value);
+                }
+
+                // Apply search term (searches across order number, customer ID, and product name)
+                if (!string.IsNullOrWhiteSpace(parameters.SearchTerm))
+                {
+                    var searchTerm = parameters.SearchTerm.Trim();
+                    query = query.Where(o =>
+                        EF.Functions.Like(o.OrderNumber, $"%{searchTerm}%") ||
+                        EF.Functions.Like(o.CustomerId, $"%{searchTerm}%") ||
+                        EF.Functions.Like(o.ProductName, $"%{searchTerm}%"));
+                }
+
+                // Get total count before pagination
+                var totalCount = await query.CountAsync(cancellationToken);
+
+                // Apply sorting
+                query = parameters.SortBy?.ToLower() switch
+                {
+                    "ordernumber" => parameters.SortOrder == "asc" 
+                        ? query.OrderBy(o => o.OrderNumber) 
+                        : query.OrderByDescending(o => o.OrderNumber),
+                    "customerid" => parameters.SortOrder == "asc" 
+                        ? query.OrderBy(o => o.CustomerId) 
+                        : query.OrderByDescending(o => o.CustomerId),
+                    "totalamount" => parameters.SortOrder == "asc" 
+                        ? query.OrderBy(o => o.TotalAmount) 
+                        : query.OrderByDescending(o => o.TotalAmount),
+                    "status" => parameters.SortOrder == "asc" 
+                        ? query.OrderBy(o => o.Status) 
+                        : query.OrderByDescending(o => o.Status),
+                    "productname" => parameters.SortOrder == "asc" 
+                        ? query.OrderBy(o => o.ProductName) 
+                        : query.OrderByDescending(o => o.ProductName),
+                    "createdat" or _ => parameters.SortOrder == "asc" 
+                        ? query.OrderBy(o => o.CreatedAt) 
+                        : query.OrderByDescending(o => o.CreatedAt)
+                };
+
+                // Apply pagination
+                var orders = await query
+                    .Skip(parameters.CalculateSkip())
+                    .Take(parameters.PageSize)
+                    .ToListAsync(cancellationToken);
+
+                _logger.LogInformation(
+                    "Successfully retrieved {OrderCount} orders out of {TotalCount} total orders",
+                    orders.Count, totalCount);
+
+                return (orders, totalCount);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error occurred while retrieving orders with filtering");
+                throw new InvalidOperationException("Failed to retrieve orders with filtering", ex);
             }
         }
 
