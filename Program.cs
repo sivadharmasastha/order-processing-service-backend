@@ -5,6 +5,7 @@ using Serilog;
 using Serilog.Events;
 using System.Threading.RateLimiting;
 using System.Text.Json;
+using StackExchange.Redis;
 using OrderProcessingSystem.Data;
 using OrderProcessingSystem.Cache;
 using OrderProcessingSystem.Services;
@@ -98,8 +99,47 @@ try
         }
     });
 
-    // Configure Redis
-    builder.Services.AddSingleton<RedisService>();
+    // Configure Redis Connection with retry and resilience
+    builder.Services.AddSingleton<IConnectionMultiplexer>(sp =>
+    {
+        var configuration = builder.Configuration.GetConnectionString("Redis") 
+            ?? throw new InvalidOperationException("Redis connection string is not configured");
+        
+        var configOptions = ConfigurationOptions.Parse(configuration);
+        
+        // Production-level configuration
+        configOptions.AbortOnConnectFail = false;
+        configOptions.ConnectTimeout = 5000;
+        configOptions.SyncTimeout = 5000;
+        configOptions.AsyncTimeout = 5000;
+        configOptions.ConnectRetry = 3;
+        configOptions.ReconnectRetryPolicy = new ExponentialRetry(5000);
+        configOptions.KeepAlive = 60;
+        configOptions.DefaultDatabase = 0;
+        
+        // Add connection event logging
+        var logger = sp.GetRequiredService<ILogger<Program>>();
+        
+        var multiplexer = ConnectionMultiplexer.Connect(configOptions);
+        
+        multiplexer.ConnectionFailed += (sender, args) =>
+        {
+            logger.LogError("Redis connection failed: {EndPoint} - {FailureType}", args.EndPoint, args.FailureType);
+        };
+        
+        multiplexer.ConnectionRestored += (sender, args) =>
+        {
+            logger.LogInformation("Redis connection restored: {EndPoint}", args.EndPoint);
+        };
+        
+        logger.LogInformation("Redis connection multiplexer initialized successfully");
+        return multiplexer;
+    });
+    
+    // Register Redis Service
+    builder.Services.AddSingleton<IRedisService, RedisService>();
+    
+    // Configure Distributed Cache with Redis
     builder.Services.AddStackExchangeRedisCache(options =>
     {
         options.Configuration = builder.Configuration.GetConnectionString("Redis");
