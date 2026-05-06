@@ -27,15 +27,18 @@ namespace OrderProcessingSystem.Services
     {
         private readonly IOrderRepository _orderRepository;
         private readonly AppDbContext _dbContext;
+        private readonly IIdempotencyService _idempotencyService;
         private readonly ILogger<OrderService> _logger;
 
         public OrderService(
             IOrderRepository orderRepository,
             AppDbContext dbContext,
+            IIdempotencyService idempotencyService,
             ILogger<OrderService> logger)
         {
             _orderRepository = orderRepository ?? throw new ArgumentNullException(nameof(orderRepository));
             _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
+            _idempotencyService = idempotencyService ?? throw new ArgumentNullException(nameof(idempotencyService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
@@ -62,33 +65,40 @@ namespace OrderProcessingSystem.Services
             // Validate request
             ValidateOrderRequest(request);
 
-            // Use a database transaction for idempotency check and order creation
+            // Use idempotency service with distributed locking and caching
+            var idempotencyResult = await _idempotencyService.CheckAndProcessAsync(
+                request.IdempotencyKey,
+                async () => await ProcessOrderCreationAsync(request, cancellationToken),
+                cancellationToken);
+
+            var orderResponse = (OrderResponse)idempotencyResult.Response!;
+
+            if (idempotencyResult.WasCached)
+            {
+                _logger.LogInformation(
+                    "Returned cached order for IdempotencyKey: {IdempotencyKey}, OrderId: {OrderId} ({ElapsedMs}ms)",
+                    request.IdempotencyKey, orderResponse.Id, idempotencyResult.ExecutionTimeMs);
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "Created new order for IdempotencyKey: {IdempotencyKey}, OrderId: {OrderId} ({ElapsedMs}ms)",
+                    request.IdempotencyKey, orderResponse.Id, idempotencyResult.ExecutionTimeMs);
+            }
+
+            return orderResponse;
+        }
+
+        /// <summary>
+        /// Internal method to process order creation (called by idempotency service)
+        /// </summary>
+        private async Task<OrderResponse> ProcessOrderCreationAsync(OrderRequest request, CancellationToken cancellationToken)
+        {
+            // Use a database transaction for order creation
             using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
             try
             {
-                // Check for idempotency - if this key was already processed, return the existing order
-                var existingIdempotencyKey = await _dbContext.Set<IdempotencyKey>()
-                    .FirstOrDefaultAsync(ik => ik.Key == request.IdempotencyKey, cancellationToken);
-
-                if (existingIdempotencyKey != null)
-                {
-                    _logger.LogWarning(
-                        "Duplicate request detected with IdempotencyKey: {IdempotencyKey}, returning existing order",
-                        request.IdempotencyKey);
-
-                    // Retrieve the existing order
-                    var existingOrder = await _orderRepository.GetOrderByIdAsync(
-                        existingIdempotencyKey.OrderId, 
-                        cancellationToken);
-
-                    if (existingOrder != null)
-                    {
-                        await transaction.CommitAsync(cancellationToken);
-                        return OrderResponse.FromOrder(existingOrder);
-                    }
-                }
-
                 // Generate unique order number
                 var orderNumber = await GenerateOrderNumberAsync(cancellationToken);
 
@@ -116,19 +126,16 @@ namespace OrderProcessingSystem.Services
                 // Save order to database
                 var createdOrder = await _orderRepository.CreateOrderAsync(order, cancellationToken);
 
-                // Store idempotency key with expiration (24 hours)
-                var idempotencyKey = new IdempotencyKey
-                {
-                    Key = request.IdempotencyKey,
-                    OrderId = createdOrder.Id,
-                    Status = "Processed",
-                    CreatedAt = DateTime.UtcNow,
-                    ExpiresAt = DateTime.UtcNow.AddHours(24),
-                    ResponseData = JsonSerializer.Serialize(OrderResponse.FromOrder(createdOrder))
-                };
+                // Create response
+                var orderResponse = OrderResponse.FromOrder(createdOrder);
 
-                await _dbContext.Set<IdempotencyKey>().AddAsync(idempotencyKey, cancellationToken);
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                // Store idempotency key with response (both Redis and Database)
+                await _idempotencyService.StoreAsync(
+                    request.IdempotencyKey,
+                    createdOrder.Id,
+                    orderResponse,
+                    expiryHours: 24,
+                    cancellationToken);
 
                 // Commit transaction
                 await transaction.CommitAsync(cancellationToken);
@@ -137,25 +144,25 @@ namespace OrderProcessingSystem.Services
                     "Successfully created order with ID: {OrderId}, OrderNumber: {OrderNumber}, TotalAmount: {TotalAmount}",
                     createdOrder.Id, createdOrder.OrderNumber, createdOrder.TotalAmount);
 
-                return OrderResponse.FromOrder(createdOrder);
+                return orderResponse;
             }
             catch (DbUpdateException dbEx)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                _logger.LogError(dbEx, 
+                _logger.LogError(dbEx,
                     "Database error during order creation for Customer: {CustomerId}, IdempotencyKey: {IdempotencyKey}",
                     request.CustomerId, request.IdempotencyKey);
-                
+
                 throw new InvalidOperationException(
                     "Failed to create order due to database error. Please try again.", dbEx);
             }
             catch (Exception ex)
             {
                 await transaction.RollbackAsync(cancellationToken);
-                _logger.LogError(ex, 
+                _logger.LogError(ex,
                     "Unexpected error during order creation for Customer: {CustomerId}, IdempotencyKey: {IdempotencyKey}",
                     request.CustomerId, request.IdempotencyKey);
-                
+
                 throw new InvalidOperationException(
                     $"An error occurred while creating the order: {ex.Message}", ex);
             }
