@@ -395,26 +395,9 @@ namespace OrderProcessingSystem.Services
                             outcome.Exception?.Message ?? "Unknown");
                     });
 
-            // Fallback policy
-            var fallbackPolicy = Policy<TResult>
-                .Handle<Exception>()
-                .FallbackAsync(
-                    fallbackValue,
-                    onFallbackAsync: (outcome, context) =>
-                    {
-                        _logger.LogWarning(
-                            outcome.Exception,
-                            "{OperationName} failed. Returning fallback value. Error: {ErrorMessage}",
-                            operationName, outcome.Exception?.Message ?? "Unknown");
-                        return Task.CompletedTask;
-                    });
-
-            // Combine policies: Fallback -> Retry
-            var combinedPolicy = Policy.WrapAsync(fallbackPolicy, retryPolicy);
-
             try
             {
-                var result = await combinedPolicy.ExecuteAsync(ct => operation(), cancellationToken);
+                var result = await retryPolicy.ExecuteAsync(ct => operation(), cancellationToken);
                 stopwatch.Stop();
 
                 _logger.LogInformation(
@@ -426,11 +409,12 @@ namespace OrderProcessingSystem.Services
             catch (Exception ex)
             {
                 stopwatch.Stop();
-                _logger.LogError(
+                _logger.LogWarning(
                     ex,
-                    "{OperationName} failed unexpectedly. Total elapsed: {ElapsedMs}ms",
-                    operationName, stopwatch.ElapsedMilliseconds);
-                throw;
+                    "{OperationName} failed after {RetryCount} retries. Returning fallback value. Total elapsed: {ElapsedMs}ms",
+                    operationName, retryCount, stopwatch.ElapsedMilliseconds);
+                
+                return fallbackValue;
             }
         }
 
@@ -479,26 +463,9 @@ namespace OrderProcessingSystem.Services
                             outcome.Exception?.Message ?? "Unknown");
                     });
 
-            // Fallback policy with function
-            var fallbackPolicy = Policy<TResult>
-                .Handle<Exception>()
-                .FallbackAsync(
-                    fallbackAction: ct => fallbackOperation(),
-                    onFallbackAsync: (outcome, context) =>
-                    {
-                        _logger.LogWarning(
-                            outcome.Exception,
-                            "{OperationName} failed. Executing fallback operation. Error: {ErrorMessage}",
-                            operationName, outcome.Exception?.Message ?? "Unknown");
-                        return Task.CompletedTask;
-                    });
-
-            // Combine policies: Fallback -> Retry
-            var combinedPolicy = Policy.WrapAsync(fallbackPolicy, retryPolicy);
-
             try
             {
-                var result = await combinedPolicy.ExecuteAsync(ct => operation(), cancellationToken);
+                var result = await retryPolicy.ExecuteAsync(ct => operation(), cancellationToken);
                 stopwatch.Stop();
 
                 _logger.LogInformation(
@@ -510,11 +477,27 @@ namespace OrderProcessingSystem.Services
             catch (Exception ex)
             {
                 stopwatch.Stop();
-                _logger.LogError(
+                _logger.LogWarning(
                     ex,
-                    "{OperationName} and fallback both failed. Total elapsed: {ElapsedMs}ms",
-                    operationName, stopwatch.ElapsedMilliseconds);
-                throw;
+                    "{OperationName} failed after {RetryCount} retries. Executing fallback operation. Total elapsed: {ElapsedMs}ms",
+                    operationName, retryCount, stopwatch.ElapsedMilliseconds);
+                
+                try
+                {
+                    var fallbackResult = await fallbackOperation();
+                    _logger.LogInformation(
+                        "{OperationName} fallback operation completed successfully",
+                        operationName);
+                    return fallbackResult;
+                }
+                catch (Exception fallbackEx)
+                {
+                    _logger.LogError(
+                        fallbackEx,
+                        "{OperationName} fallback operation also failed",
+                        operationName);
+                    throw;
+                }
             }
         }
 

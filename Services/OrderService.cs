@@ -22,23 +22,27 @@ namespace OrderProcessingSystem.Services
 
     /// <summary>
     /// Service implementation for order business logic with idempotency and error handling
+    /// Enhanced with production-grade retry mechanisms for resilience
     /// </summary>
     public class OrderService : IOrderService
     {
         private readonly IOrderRepository _orderRepository;
         private readonly AppDbContext _dbContext;
         private readonly IIdempotencyService _idempotencyService;
+        private readonly RetryService _retryService;
         private readonly ILogger<OrderService> _logger;
 
         public OrderService(
             IOrderRepository orderRepository,
             AppDbContext dbContext,
             IIdempotencyService idempotencyService,
+            RetryService retryService,
             ILogger<OrderService> logger)
         {
             _orderRepository = orderRepository ?? throw new ArgumentNullException(nameof(orderRepository));
             _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
             _idempotencyService = idempotencyService ?? throw new ArgumentNullException(nameof(idempotencyService));
+            _retryService = retryService ?? throw new ArgumentNullException(nameof(retryService));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
@@ -91,6 +95,7 @@ namespace OrderProcessingSystem.Services
 
         /// <summary>
         /// Internal method to process order creation (called by idempotency service)
+        /// Enhanced with retry logic for database operations
         /// </summary>
         private async Task<OrderResponse> ProcessOrderCreationAsync(OrderRequest request, CancellationToken cancellationToken)
         {
@@ -99,7 +104,7 @@ namespace OrderProcessingSystem.Services
 
             try
             {
-                // Generate unique order number
+                // Generate unique order number (with built-in retry logic)
                 var orderNumber = await GenerateOrderNumberAsync(cancellationToken);
 
                 // Create order entity
@@ -123,8 +128,12 @@ namespace OrderProcessingSystem.Services
                 // Additional business validation
                 ValidateOrderEntity(order);
 
-                // Save order to database
-                var createdOrder = await _orderRepository.CreateOrderAsync(order, cancellationToken);
+                // Save order to database with retry logic for transient failures
+                var createdOrder = await _retryService.ExecuteDatabaseOperationAsync(
+                    async () => await _orderRepository.CreateOrderAsync(order, cancellationToken),
+                    retryCount: 5,
+                    operationName: $"CreateOrder_{request.IdempotencyKey}",
+                    cancellationToken: cancellationToken);
 
                 // Create response
                 var orderResponse = OrderResponse.FromOrder(createdOrder);
@@ -169,7 +178,7 @@ namespace OrderProcessingSystem.Services
         }
 
         /// <summary>
-        /// Retrieves an order by its ID
+        /// Retrieves an order by its ID with retry logic for transient failures
         /// </summary>
         public async Task<OrderResponse?> GetOrderByIdAsync(int id, CancellationToken cancellationToken = default)
         {
@@ -181,7 +190,12 @@ namespace OrderProcessingSystem.Services
 
             _logger.LogInformation("Retrieving order with ID: {OrderId}", id);
 
-            var order = await _orderRepository.GetOrderByIdAsync(id, cancellationToken);
+            // Wrap database operation with retry logic
+            var order = await _retryService.ExecuteDatabaseOperationAsync(
+                async () => await _orderRepository.GetOrderByIdAsync(id, cancellationToken),
+                retryCount: 5,
+                operationName: $"GetOrderById_{id}",
+                cancellationToken: cancellationToken);
             
             if (order == null)
             {
@@ -193,7 +207,7 @@ namespace OrderProcessingSystem.Services
         }
 
         /// <summary>
-        /// Retrieves an order by its order number
+        /// Retrieves an order by its order number with retry logic for transient failures
         /// </summary>
         public async Task<OrderResponse?> GetOrderByOrderNumberAsync(string orderNumber, CancellationToken cancellationToken = default)
         {
@@ -205,7 +219,12 @@ namespace OrderProcessingSystem.Services
 
             _logger.LogInformation("Retrieving order with OrderNumber: {OrderNumber}", orderNumber);
 
-            var order = await _orderRepository.GetOrderByOrderNumberAsync(orderNumber, cancellationToken);
+            // Wrap database operation with retry logic
+            var order = await _retryService.ExecuteDatabaseOperationAsync(
+                async () => await _orderRepository.GetOrderByOrderNumberAsync(orderNumber, cancellationToken),
+                retryCount: 5,
+                operationName: $"GetOrderByOrderNumber_{orderNumber}",
+                cancellationToken: cancellationToken);
             
             if (order == null)
             {
@@ -217,13 +236,14 @@ namespace OrderProcessingSystem.Services
         }
 
         /// <summary>
-        /// Retrieves all orders (simple version without pagination - use GetOrdersAsync for production workloads)
+        /// Retrieves all orders with retry logic (simple version without pagination - use GetOrdersAsync for production workloads)
         /// </summary>
         /// <param name="cancellationToken">Cancellation token for async operation</param>
         /// <returns>Collection of all orders</returns>
         /// <remarks>
         /// WARNING: This method retrieves ALL orders without pagination. 
         /// For production use with large datasets, use GetOrdersAsync with pagination instead.
+        /// Enhanced with retry logic for transient database failures.
         /// </remarks>
         public async Task<IEnumerable<OrderResponse>> GetAllOrdersAsync(CancellationToken cancellationToken = default)
         {
@@ -231,7 +251,12 @@ namespace OrderProcessingSystem.Services
 
             try
             {
-                var orders = await _orderRepository.GetAllOrdersAsync(cancellationToken);
+                // Wrap database operation with retry logic
+                var orders = await _retryService.ExecuteDatabaseOperationAsync(
+                    async () => await _orderRepository.GetAllOrdersAsync(cancellationToken),
+                    retryCount: 5,
+                    operationName: "GetAllOrders",
+                    cancellationToken: cancellationToken);
                 
                 var orderResponses = orders.Select(OrderResponse.FromOrder).ToList();
                 
@@ -248,6 +273,7 @@ namespace OrderProcessingSystem.Services
 
         /// <summary>
         /// Retrieves orders with advanced filtering, sorting, and pagination (Production-level method)
+        /// Enhanced with retry logic for resilience against transient failures
         /// </summary>
         /// <param name="parameters">Query parameters for filtering, sorting, and pagination</param>
         /// <param name="cancellationToken">Cancellation token for async operation</param>
@@ -276,10 +302,12 @@ namespace OrderProcessingSystem.Services
                     parameters.CustomerId ?? "All", parameters.SearchTerm ?? "None", 
                     parameters.SortBy, parameters.SortOrder);
 
-                // Retrieve filtered and paginated orders from repository
-                var (orders, totalCount) = await _orderRepository.GetOrdersWithFilteringAsync(
-                    parameters, 
-                    cancellationToken);
+                // Retrieve filtered and paginated orders from repository with retry logic
+                var (orders, totalCount) = await _retryService.ExecuteDatabaseOperationAsync(
+                    async () => await _orderRepository.GetOrdersWithFilteringAsync(parameters, cancellationToken),
+                    retryCount: 5,
+                    operationName: $"GetOrdersFiltered_Page{parameters.PageNumber}",
+                    cancellationToken: cancellationToken);
 
                 // Convert to response DTOs
                 var orderResponses = orders.Select(OrderResponse.FromOrder).ToList();
@@ -313,7 +341,7 @@ namespace OrderProcessingSystem.Services
         }
 
         /// <summary>
-        /// Updates the status of an existing order
+        /// Updates the status of an existing order with retry logic for transient failures
         /// </summary>
         public async Task<bool> UpdateOrderStatusAsync(int orderId, OrderStatus status, CancellationToken cancellationToken = default)
         {
@@ -324,7 +352,12 @@ namespace OrderProcessingSystem.Services
 
             _logger.LogInformation("Updating order status for OrderId: {OrderId} to {Status}", orderId, status);
 
-            var order = await _orderRepository.GetOrderByIdAsync(orderId, cancellationToken);
+            // Wrap database read operation with retry logic
+            var order = await _retryService.ExecuteDatabaseOperationAsync(
+                async () => await _orderRepository.GetOrderByIdAsync(orderId, cancellationToken),
+                retryCount: 5,
+                operationName: $"GetOrderForUpdate_{orderId}",
+                cancellationToken: cancellationToken);
             
             if (order == null)
             {
@@ -340,7 +373,12 @@ namespace OrderProcessingSystem.Services
                 order.ProcessedAt = DateTime.UtcNow;
             }
 
-            var result = await _orderRepository.UpdateOrderAsync(order, cancellationToken);
+            // Wrap database update operation with retry logic
+            var result = await _retryService.ExecuteDatabaseOperationAsync(
+                async () => await _orderRepository.UpdateOrderAsync(order, cancellationToken),
+                retryCount: 5,
+                operationName: $"UpdateOrderStatus_{orderId}",
+                cancellationToken: cancellationToken);
 
             if (result)
             {
@@ -356,7 +394,7 @@ namespace OrderProcessingSystem.Services
         }
 
         /// <summary>
-        /// Soft deletes an order (sets IsDeleted flag)
+        /// Soft deletes an order (sets IsDeleted flag) with retry logic for transient failures
         /// </summary>
         public async Task<bool> DeleteOrderAsync(int id, CancellationToken cancellationToken = default)
         {
@@ -367,7 +405,12 @@ namespace OrderProcessingSystem.Services
 
             _logger.LogInformation("Deleting order with ID: {OrderId}", id);
 
-            var result = await _orderRepository.DeleteOrderAsync(id, cancellationToken);
+            // Wrap database delete operation with retry logic
+            var result = await _retryService.ExecuteDatabaseOperationAsync(
+                async () => await _orderRepository.DeleteOrderAsync(id, cancellationToken),
+                retryCount: 5,
+                operationName: $"DeleteOrder_{id}",
+                cancellationToken: cancellationToken);
 
             if (result)
             {
@@ -461,6 +504,7 @@ namespace OrderProcessingSystem.Services
 
         /// <summary>
         /// Generates a unique order number with format: ORD-YYYYMMDD-XXXXXX
+        /// Enhanced with retry logic for database collision checks
         /// </summary>
         private async Task<string> GenerateOrderNumberAsync(CancellationToken cancellationToken)
         {
@@ -474,8 +518,12 @@ namespace OrderProcessingSystem.Services
                 var suffix = random.Next(100000, 999999);
                 var orderNumber = $"ORD-{datePrefix}-{suffix}";
 
-                // Check if this order number already exists
-                var existingOrder = await _orderRepository.GetOrderByOrderNumberAsync(orderNumber, cancellationToken);
+                // Check if this order number already exists with retry logic
+                var existingOrder = await _retryService.ExecuteDatabaseOperationAsync(
+                    async () => await _orderRepository.GetOrderByOrderNumberAsync(orderNumber, cancellationToken),
+                    retryCount: 3,
+                    operationName: $"CheckOrderNumberCollision_{orderNumber}",
+                    cancellationToken: cancellationToken);
                 
                 if (existingOrder == null)
                 {

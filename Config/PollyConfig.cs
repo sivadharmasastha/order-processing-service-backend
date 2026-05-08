@@ -22,22 +22,20 @@ namespace OrderProcessingSystem.Config
         private const string CombinedHttpPolicy = "CombinedHttp";
 
         /// <summary>
-        /// Configures Polly policies for the application with policy registry
+        /// Configures Polly policies for the application
+        /// Note: Policy Registry is not used in Polly v8. Use dependency injection directly instead.
         /// </summary>
         /// <param name="services">Service collection</param>
         public static void ConfigurePolicies(IServiceCollection services)
         {
-            // Add policy registry for centralized policy management
-            var registry = services.AddPolicyRegistry();
-
-            // Register database policies
-            registry.Add(DatabaseRetryPolicy, GetDatabaseRetryPolicy());
-            registry.Add(DatabaseCircuitBreakerPolicy, GetDatabaseCircuitBreakerPolicy());
-
-            // Register HTTP policies
-            registry.Add(HttpRetryPolicy, GetHttpRetryPolicy());
-            registry.Add(HttpCircuitBreakerPolicy, GetHttpCircuitBreakerPolicy());
-            registry.Add(CombinedHttpPolicy, GetCombinedHttpPolicy());
+            // Policy registry has been removed in Polly v8
+            // If you need centralized policy management, consider using:
+            // 1. Dependency injection with named HttpClients
+            // 2. Custom policy factory services
+            // 3. Configuration-based policy builders
+            
+            // For now, policies are accessed via static methods (GetHttpRetryPolicy, etc.)
+            // and can be injected where needed through services like RetryService
         }
 
         #region HTTP Policies
