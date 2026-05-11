@@ -200,7 +200,13 @@ namespace OrderProcessingSystem.Services
                 }
 
                 // Fallback to database check
-                return await HasBeenProcessedInDatabaseAsync(key, cancellationToken);
+                _logger.LogDebug("Idempotency key {Key} not found in Redis, checking database", key);
+                var existsInDb = await HasBeenProcessedInDatabaseAsync(key, cancellationToken);
+                if (existsInDb)
+                {
+                    _logger.LogInformation("Idempotency key {Key} found in database but not in Redis", key);
+                }
+                return existsInDb;
             }
             catch (Exception ex)
             {
@@ -218,6 +224,7 @@ namespace OrderProcessingSystem.Services
         {
             ValidateKey(key);
 
+            var stopwatch = Stopwatch.StartNew();
             try
             {
                 var cacheKey = RedisCacheKeys.IdempotencyKey(key);
@@ -228,17 +235,35 @@ namespace OrderProcessingSystem.Services
                     var cachedData = await _redisService.GetAsync<IdempotencyCacheData>(cacheKey, cancellationToken);
                     if (cachedData != null && !string.IsNullOrEmpty(cachedData.ResponseData))
                     {
-                        _logger.LogDebug("Retrieved cached response for idempotency key {Key} from Redis", key);
+                        stopwatch.Stop();
+                        _logger.LogInformation(
+                            "Retrieved cached response for idempotency key {Key} from Redis ({ElapsedMs}ms)", 
+                            key, stopwatch.ElapsedMilliseconds);
                         return JsonSerializer.Deserialize<T>(cachedData.ResponseData);
                     }
+                    _logger.LogDebug("Idempotency key {Key} not found in Redis cache", key);
+                }
+                else
+                {
+                    _logger.LogWarning("Redis not connected, falling back to database for key {Key}", key);
                 }
 
                 // Fallback to database
-                return await GetResponseFromDatabaseAsync<T>(key, cancellationToken);
+                var dbResult = await GetResponseFromDatabaseAsync<T>(key, cancellationToken);
+                stopwatch.Stop();
+                if (dbResult != null)
+                {
+                    _logger.LogInformation(
+                        "Retrieved response for idempotency key {Key} from database ({ElapsedMs}ms)", 
+                        key, stopwatch.ElapsedMilliseconds);
+                }
+                return dbResult;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error getting cached response for key: {Key}", key);
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error getting cached response for key: {Key} ({ElapsedMs}ms)", 
+                    key, stopwatch.ElapsedMilliseconds);
                 return null;
             }
         }
@@ -397,8 +422,11 @@ namespace OrderProcessingSystem.Services
         /// <returns>Number of expired keys removed</returns>
         public async Task<int> CleanupExpiredKeysAsync(CancellationToken cancellationToken = default)
         {
+            var stopwatch = Stopwatch.StartNew();
             try
             {
+                _logger.LogInformation("Starting cleanup of expired idempotency keys");
+                
                 var expiredKeys = await _dbContext.Set<IdempotencyKey>()
                     .Where(ik => ik.ExpiresAt < DateTime.UtcNow)
                     .ToListAsync(cancellationToken);
@@ -407,15 +435,24 @@ namespace OrderProcessingSystem.Services
                 {
                     _dbContext.Set<IdempotencyKey>().RemoveRange(expiredKeys);
                     await _dbContext.SaveChangesAsync(cancellationToken);
-
-                    _logger.LogInformation("Cleaned up {Count} expired idempotency keys from database", expiredKeys.Count);
+                    
+                    stopwatch.Stop();
+                    _logger.LogInformation(
+                        "Cleaned up {Count} expired idempotency keys from database ({ElapsedMs}ms)", 
+                        expiredKeys.Count, stopwatch.ElapsedMilliseconds);
+                }
+                else
+                {
+                    stopwatch.Stop();
+                    _logger.LogInformation("No expired idempotency keys found ({ElapsedMs}ms)", stopwatch.ElapsedMilliseconds);
                 }
 
                 return expiredKeys.Count;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error cleaning up expired idempotency keys");
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error cleaning up expired idempotency keys ({ElapsedMs}ms)", stopwatch.ElapsedMilliseconds);
                 throw;
             }
         }

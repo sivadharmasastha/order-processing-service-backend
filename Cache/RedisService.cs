@@ -828,15 +828,15 @@ namespace OrderProcessingSystem.Cache
         private void OnConnectionFailed(object? sender, ConnectionFailedEventArgs e)
         {
             _logger.LogError(e.Exception, 
-                "Redis connection failed. EndPoint: {EndPoint}, FailureType: {FailureType}", 
-                e.EndPoint, e.FailureType);
+                "Redis connection failed. EndPoint: {EndPoint}, FailureType: {FailureType}, ConnectionType: {ConnectionType}", 
+                e.EndPoint, e.FailureType, e.ConnectionType);
         }
 
         private void OnConnectionRestored(object? sender, ConnectionFailedEventArgs e)
         {
             _logger.LogInformation(
-                "Redis connection restored. EndPoint: {EndPoint}", 
-                e.EndPoint);
+                "Redis connection restored. EndPoint: {EndPoint}, ConnectionType: {ConnectionType}", 
+                e.EndPoint, e.ConnectionType);
         }
 
         private void OnErrorMessage(object? sender, RedisErrorEventArgs e)

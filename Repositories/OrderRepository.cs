@@ -92,27 +92,34 @@ namespace OrderProcessingSystem.Repositories
 
         /// <summary>
         /// Retrieves all orders from the database (excluding soft-deleted orders)
+        /// WARNING: Use GetOrdersWithFilteringAsync for production with pagination
         /// </summary>
         /// <param name="cancellationToken">Cancellation token</param>
         /// <returns>Collection of all orders</returns>
         public async Task<IEnumerable<Order>> GetAllOrdersAsync(CancellationToken cancellationToken = default)
         {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 _logger.LogInformation("Retrieving all orders from database");
 
                 var orders = await _context.Orders
                     .AsNoTracking() // Use AsNoTracking for read-only operations to improve performance
+                    .Where(o => !o.IsDeleted) // Filter out soft-deleted orders
                     .OrderByDescending(o => o.CreatedAt) // Most recent orders first
                     .ToListAsync(cancellationToken);
 
-                _logger.LogInformation("Successfully retrieved {OrderCount} orders", orders.Count);
+                stopwatch.Stop();
+                _logger.LogInformation(
+                    "Successfully retrieved {OrderCount} orders ({ElapsedMs}ms)", 
+                    orders.Count, stopwatch.ElapsedMilliseconds);
 
                 return orders;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error occurred while retrieving all orders");
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error occurred while retrieving all orders ({ElapsedMs}ms)", stopwatch.ElapsedMilliseconds);
                 throw new InvalidOperationException("Failed to retrieve orders from database", ex);
             }
         }
@@ -125,28 +132,32 @@ namespace OrderProcessingSystem.Repositories
         /// <returns>The order if found, otherwise null</returns>
         public async Task<Order?> GetOrderByIdAsync(int id, CancellationToken cancellationToken = default)
         {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                _logger.LogInformation("Retrieving order with ID: {OrderId}", id);
+                _logger.LogDebug("Retrieving order with ID: {OrderId}", id);
 
                 var order = await _context.Orders
                     .AsNoTracking()
-                    .FirstOrDefaultAsync(o => o.Id == id, cancellationToken);
+                    .Where(o => o.Id == id && !o.IsDeleted)
+                    .FirstOrDefaultAsync(cancellationToken);
 
+                stopwatch.Stop();
                 if (order == null)
                 {
-                    _logger.LogWarning("Order with ID: {OrderId} not found", id);
+                    _logger.LogWarning("Order with ID: {OrderId} not found ({ElapsedMs}ms)", id, stopwatch.ElapsedMilliseconds);
                 }
                 else
                 {
-                    _logger.LogInformation("Successfully retrieved order with ID: {OrderId}", id);
+                    _logger.LogDebug("Successfully retrieved order with ID: {OrderId} ({ElapsedMs}ms)", id, stopwatch.ElapsedMilliseconds);
                 }
 
                 return order;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error occurred while retrieving order with ID: {OrderId}", id);
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error occurred while retrieving order with ID: {OrderId} ({ElapsedMs}ms)", id, stopwatch.ElapsedMilliseconds);
                 throw new InvalidOperationException($"Failed to retrieve order with ID: {id}", ex);
             }
         }
@@ -164,28 +175,32 @@ namespace OrderProcessingSystem.Repositories
                 throw new ArgumentException("Order number cannot be null or empty", nameof(orderNumber));
             }
 
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                _logger.LogInformation("Retrieving order with OrderNumber: {OrderNumber}", orderNumber);
+                _logger.LogDebug("Retrieving order with OrderNumber: {OrderNumber}", orderNumber);
 
                 var order = await _context.Orders
                     .AsNoTracking()
-                    .FirstOrDefaultAsync(o => o.OrderNumber == orderNumber, cancellationToken);
+                    .Where(o => o.OrderNumber == orderNumber && !o.IsDeleted)
+                    .FirstOrDefaultAsync(cancellationToken);
 
+                stopwatch.Stop();
                 if (order == null)
                 {
-                    _logger.LogWarning("Order with OrderNumber: {OrderNumber} not found", orderNumber);
+                    _logger.LogWarning("Order with OrderNumber: {OrderNumber} not found ({ElapsedMs}ms)", orderNumber, stopwatch.ElapsedMilliseconds);
                 }
                 else
                 {
-                    _logger.LogInformation("Successfully retrieved order with OrderNumber: {OrderNumber}", orderNumber);
+                    _logger.LogDebug("Successfully retrieved order with OrderNumber: {OrderNumber} ({ElapsedMs}ms)", orderNumber, stopwatch.ElapsedMilliseconds);
                 }
 
                 return order;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error occurred while retrieving order with OrderNumber: {OrderNumber}", orderNumber);
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error occurred while retrieving order with OrderNumber: {OrderNumber} ({ElapsedMs}ms)", orderNumber, stopwatch.ElapsedMilliseconds);
                 throw new InvalidOperationException($"Failed to retrieve order with OrderNumber: {orderNumber}", ex);
             }
         }
@@ -203,6 +218,7 @@ namespace OrderProcessingSystem.Repositories
                 throw new ArgumentNullException(nameof(order), "Order cannot be null");
             }
 
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 _logger.LogInformation("Updating order with ID: {OrderId}", order.Id);
@@ -216,28 +232,45 @@ namespace OrderProcessingSystem.Repositories
                 _context.Orders.Update(order);
                 var rowsAffected = await _context.SaveChangesAsync(cancellationToken);
 
+                stopwatch.Stop();
                 if (rowsAffected > 0)
                 {
-                    _logger.LogInformation("Successfully updated order with ID: {OrderId}", order.Id);
+                    _logger.LogInformation(
+                        "Successfully updated order with ID: {OrderId} ({ElapsedMs}ms)", 
+                        order.Id, stopwatch.ElapsedMilliseconds);
                     return true;
                 }
 
-                _logger.LogWarning("No rows were affected when updating order with ID: {OrderId}", order.Id);
+                _logger.LogWarning(
+                    "No rows were affected when updating order with ID: {OrderId} ({ElapsedMs}ms)", 
+                    order.Id, stopwatch.ElapsedMilliseconds);
                 return false;
             }
             catch (DbUpdateConcurrencyException concurrencyEx)
             {
-                _logger.LogError(concurrencyEx, "Concurrency conflict while updating order with ID: {OrderId}", order.Id);
+                stopwatch.Stop();
+                _logger.LogError(
+                    concurrencyEx, 
+                    "Concurrency conflict while updating order with ID: {OrderId} ({ElapsedMs}ms)", 
+                    order.Id, stopwatch.ElapsedMilliseconds);
                 throw new InvalidOperationException($"Concurrency conflict occurred while updating order with ID: {order.Id}", concurrencyEx);
             }
             catch (DbUpdateException dbEx)
             {
-                _logger.LogError(dbEx, "Database error while updating order with ID: {OrderId}", order.Id);
+                stopwatch.Stop();
+                _logger.LogError(
+                    dbEx, 
+                    "Database error while updating order with ID: {OrderId} ({ElapsedMs}ms)", 
+                    order.Id, stopwatch.ElapsedMilliseconds);
                 throw new InvalidOperationException($"Failed to update order: {dbEx.Message}", dbEx);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error while updating order with ID: {OrderId}", order.Id);
+                stopwatch.Stop();
+                _logger.LogError(
+                    ex, 
+                    "Unexpected error while updating order with ID: {OrderId} ({ElapsedMs}ms)", 
+                    order.Id, stopwatch.ElapsedMilliseconds);
                 throw;
             }
         }
@@ -250,6 +283,7 @@ namespace OrderProcessingSystem.Repositories
         /// <returns>True if deletion was successful, false otherwise</returns>
         public async Task<bool> DeleteOrderAsync(int id, CancellationToken cancellationToken = default)
         {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 _logger.LogInformation("Attempting to delete order with ID: {OrderId}", id);
@@ -258,7 +292,10 @@ namespace OrderProcessingSystem.Repositories
 
                 if (order == null)
                 {
-                    _logger.LogWarning("Order with ID: {OrderId} not found for deletion", id);
+                    stopwatch.Stop();
+                    _logger.LogWarning(
+                        "Order with ID: {OrderId} not found for deletion ({ElapsedMs}ms)", 
+                        id, stopwatch.ElapsedMilliseconds);
                     return false;
                 }
 
@@ -269,9 +306,12 @@ namespace OrderProcessingSystem.Repositories
                 _context.Orders.Update(order);
                 var rowsAffected = await _context.SaveChangesAsync(cancellationToken);
 
+                stopwatch.Stop();
                 if (rowsAffected > 0)
                 {
-                    _logger.LogInformation("Successfully deleted order with ID: {OrderId}", id);
+                    _logger.LogInformation(
+                        "Successfully deleted order with ID: {OrderId} ({ElapsedMs}ms)", 
+                        id, stopwatch.ElapsedMilliseconds);
                     return true;
                 }
 
@@ -279,13 +319,18 @@ namespace OrderProcessingSystem.Repositories
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error occurred while deleting order with ID: {OrderId}", id);
+                stopwatch.Stop();
+                _logger.LogError(
+                    ex, 
+                    "Error occurred while deleting order with ID: {OrderId} ({ElapsedMs}ms)", 
+                    id, stopwatch.ElapsedMilliseconds);
                 throw new InvalidOperationException($"Failed to delete order with ID: {id}", ex);
             }
         }
 
         /// <summary>
         /// Retrieves orders with advanced filtering, sorting, and pagination
+        /// Optimized for production with efficient query execution
         /// </summary>
         /// <param name="parameters">Query parameters for filtering and pagination</param>
         /// <param name="cancellationToken">Cancellation token</param>
@@ -299,17 +344,20 @@ namespace OrderProcessingSystem.Repositories
                 throw new ArgumentNullException(nameof(parameters), "Query parameters cannot be null");
             }
 
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 _logger.LogInformation(
-                    "Retrieving orders with filters - Page: {PageNumber}, PageSize: {PageSize}, Status: {Status}, CustomerId: {CustomerId}",
-                    parameters.PageNumber, parameters.PageSize, parameters.Status ?? "All", parameters.CustomerId ?? "All");
+                    "Retrieving orders with filters - Page: {PageNumber}, PageSize: {PageSize}, Status: {Status}, CustomerId: {CustomerId}, SearchTerm: {SearchTerm}",
+                    parameters.PageNumber, parameters.PageSize, parameters.Status ?? "All", parameters.CustomerId ?? "All", parameters.SearchTerm ?? "None");
 
                 // Validate parameters
                 parameters.Validate();
 
-                // Start with base query
-                IQueryable<Order> query = _context.Orders.AsNoTracking();
+                // Start with base query with AsNoTracking for better performance
+                IQueryable<Order> query = _context.Orders
+                    .AsNoTracking()
+                    .AsSplitQuery(); // Use split query for better performance with complex filters
 
                 // Apply soft-delete filter (exclude deleted by default)
                 if (!parameters.IncludeDeleted)
@@ -323,25 +371,31 @@ namespace OrderProcessingSystem.Repositories
                     if (Enum.TryParse<OrderStatus>(parameters.Status, true, out var status))
                     {
                         query = query.Where(o => o.Status == status);
+                        _logger.LogDebug("Applied status filter: {Status}", status);
                     }
                 }
 
-                // Apply customer ID filter
+                // Apply customer ID filter (exact match for better index usage)
                 if (!string.IsNullOrWhiteSpace(parameters.CustomerId))
                 {
                     query = query.Where(o => o.CustomerId == parameters.CustomerId);
+                    _logger.LogDebug("Applied customer ID filter: {CustomerId}", parameters.CustomerId);
                 }
 
                 // Apply product name filter (partial match, case-insensitive)
                 if (!string.IsNullOrWhiteSpace(parameters.ProductName))
                 {
-                    query = query.Where(o => EF.Functions.Like(o.ProductName, $"%{parameters.ProductName}%"));
+                    var productNameLower = parameters.ProductName.ToLower();
+                    query = query.Where(o => o.ProductName.ToLower().Contains(productNameLower));
+                    _logger.LogDebug("Applied product name filter: {ProductName}", parameters.ProductName);
                 }
 
-                // Apply date range filter
+                // Apply date range filter (optimized with indexed CreatedAt)
                 if (parameters.FromDate.HasValue)
                 {
-                    query = query.Where(o => o.CreatedAt >= parameters.FromDate.Value);
+                    var fromDate = parameters.FromDate.Value.Date;
+                    query = query.Where(o => o.CreatedAt >= fromDate);
+                    _logger.LogDebug("Applied from date filter: {FromDate}", fromDate);
                 }
 
                 if (parameters.ToDate.HasValue)
@@ -349,33 +403,41 @@ namespace OrderProcessingSystem.Repositories
                     // Add one day to include the entire ToDate day
                     var toDateInclusive = parameters.ToDate.Value.Date.AddDays(1);
                     query = query.Where(o => o.CreatedAt < toDateInclusive);
+                    _logger.LogDebug("Applied to date filter: {ToDate}", parameters.ToDate.Value.Date);
                 }
 
-                // Apply amount range filter
+                // Apply amount range filter (optimized with indexed TotalAmount)
                 if (parameters.MinAmount.HasValue)
                 {
                     query = query.Where(o => o.TotalAmount >= parameters.MinAmount.Value);
+                    _logger.LogDebug("Applied min amount filter: {MinAmount}", parameters.MinAmount.Value);
                 }
 
                 if (parameters.MaxAmount.HasValue)
                 {
                     query = query.Where(o => o.TotalAmount <= parameters.MaxAmount.Value);
+                    _logger.LogDebug("Applied max amount filter: {MaxAmount}", parameters.MaxAmount.Value);
                 }
 
                 // Apply search term (searches across order number, customer ID, and product name)
+                // Using OR conditions - consider full-text search for production at scale
                 if (!string.IsNullOrWhiteSpace(parameters.SearchTerm))
                 {
-                    var searchTerm = parameters.SearchTerm.Trim();
+                    var searchTermLower = parameters.SearchTerm.Trim().ToLower();
                     query = query.Where(o =>
-                        EF.Functions.Like(o.OrderNumber, $"%{searchTerm}%") ||
-                        EF.Functions.Like(o.CustomerId, $"%{searchTerm}%") ||
-                        EF.Functions.Like(o.ProductName, $"%{searchTerm}%"));
+                        o.OrderNumber.ToLower().Contains(searchTermLower) ||
+                        o.CustomerId.ToLower().Contains(searchTermLower) ||
+                        o.ProductName.ToLower().Contains(searchTermLower));
+                    _logger.LogDebug("Applied search term filter: {SearchTerm}", parameters.SearchTerm);
                 }
 
-                // Get total count before pagination
+                // Get total count before pagination (executed as separate query)
+                var countStopwatch = System.Diagnostics.Stopwatch.StartNew();
                 var totalCount = await query.CountAsync(cancellationToken);
+                countStopwatch.Stop();
+                _logger.LogDebug("Count query executed in {ElapsedMs}ms, Total: {TotalCount}", countStopwatch.ElapsedMilliseconds, totalCount);
 
-                // Apply sorting
+                // Apply sorting (use indexes where possible)
                 query = parameters.SortBy?.ToLower() switch
                 {
                     "ordernumber" => parameters.SortOrder == "asc" 
@@ -398,21 +460,28 @@ namespace OrderProcessingSystem.Repositories
                         : query.OrderByDescending(o => o.CreatedAt)
                 };
 
-                // Apply pagination
+                // Apply pagination (Skip/Take for efficient paging)
+                var skip = parameters.CalculateSkip();
+                var dataStopwatch = System.Diagnostics.Stopwatch.StartNew();
                 var orders = await query
-                    .Skip(parameters.CalculateSkip())
+                    .Skip(skip)
                     .Take(parameters.PageSize)
                     .ToListAsync(cancellationToken);
+                dataStopwatch.Stop();
 
+                stopwatch.Stop();
                 _logger.LogInformation(
-                    "Successfully retrieved {OrderCount} orders out of {TotalCount} total orders",
-                    orders.Count, totalCount);
+                    "Successfully retrieved {OrderCount} orders out of {TotalCount} total (Page {PageNumber}, Query: {QueryMs}ms, Count: {CountMs}ms, Data: {DataMs}ms, Total: {TotalMs}ms)",
+                    orders.Count, totalCount, parameters.PageNumber, 
+                    stopwatch.ElapsedMilliseconds - countStopwatch.ElapsedMilliseconds - dataStopwatch.ElapsedMilliseconds,
+                    countStopwatch.ElapsedMilliseconds, dataStopwatch.ElapsedMilliseconds, stopwatch.ElapsedMilliseconds);
 
                 return (orders, totalCount);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error occurred while retrieving orders with filtering");
+                stopwatch.Stop();
+                _logger.LogError(ex, "Error occurred while retrieving orders with filtering ({ElapsedMs}ms)", stopwatch.ElapsedMilliseconds);
                 throw new InvalidOperationException("Failed to retrieve orders with filtering", ex);
             }
         }
